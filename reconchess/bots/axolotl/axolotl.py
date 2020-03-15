@@ -2,18 +2,6 @@ import math
 import random
 from reconchess import *
 
-
-def sense_board(board: chess.Board, square: Square):
-    builder = []
-    for i in range(square - 9, square + 15, 8):
-        for j in range(3):
-            piece = board.piece_at(i + j)
-            if not piece:
-                builder.append(" ")
-            else:
-                builder.append(piece.symbol())
-    return "".join(builder)
-
 # Call a move partially legal if the move is not legal by normal chess rules, but does not result in a pass.
 # Example: A move by a queen that is blocked by an opponent piece. The move is not a pass as the queen takes the opponent piece.
 #
@@ -31,6 +19,7 @@ class AxolotlBot(Player):
 
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
         self.color = color
+        self.hypotheses = {board.fen(shredder=True): 1}
         # TODO: move to handle opponent move result
         if color == board.turn:
             self.hypotheses = {board.fen(shredder=True): 1}
@@ -55,29 +44,72 @@ class AxolotlBot(Player):
             # calculate new hypotheses and probabilities using information about capture
             pass
 
+    @staticmethod
+    def expand_fen(fen):
+        """
+        Converts a FEN string to a different form where numbers are replaced by dots and backslashes are removed.
+        :param fen: FEN string
+        :return: Expanded FEN string
+        """
+        builder = []
+        lines = fen.split(' ', 1)[0].split('/')
+        lines.reverse()
+        for line in lines:
+            for char in line:
+                if char.isdigit():
+                    builder.append('.' * int(char))
+                elif char != '/':
+                    builder.append(char)
+        s = "".join(builder)
+        return s
+
+    @staticmethod
+    def sense_expanded_fen(s, square):
+        """
+        Returns a 9 character long subsequence of an expanded FEN string representing a 3 x 3 sense result.
+        :param s: expanded FEN string
+        :param square: center square to sense
+        :return: sense result
+        """
+        return s[square - 9:square - 6] + s[square - 1:square + 2] + s[square + 7:square + 10]
+
     def choose_sense(self, sense_actions: List[Square], move_actions: List[chess.Move], seconds_left: float) -> Optional[Square]:
-        distributions = {} # maps square to distribution of number of hypotheses remaining after sense
+        # distributions will be a map from square to some distribution
+        # initialize distributions
+        distributions = {}
         for i in range(1, 7):
             for j in range(1, 7):
-                square = 8 * i + j
-                sense_dist = {} # maps sense result to (probability, count)
-                num_dist = {} # maps number of remaining hypotheses to probability
-                for h, p in self.hypotheses:
-                    result = sense_board(h, square)
-                    if result in sense_dist:
-                        sense_dist[result] += (p, 1)
+                distributions[8 * i + j] = {}
+
+        for h, p in self.hypotheses.items():
+            # create simple string representation of each board for easy sensing
+            s = self.expand_fen(h)
+            # sense each square of the board and tally up results in distributions
+            for i in range(1, 7):
+                for j in range(1, 7):
+                    square = 8 * i + j
+                    dist = distributions[square]
+                    result = self.sense_expanded_fen(s, square)
+                    if result in dist:
+                        (q, c) = dist[result]
+                        dist[result] = (p + q, c + 1)
                     else:
-                        sense_dist[result] = (p, 1)
-                for p, c in sense_dist.values():
-                    if c in num_dist:
-                        num_dist[c] += p
-                    else:
-                        num_dist[c] = p
-                distributions[square] = num_dist
+                        dist[result] = (p, 1)
+
+        # each value in distributions is a map from sense result to (probability, count)
+        # modify distributions in place so that each value is a map from number of hypotheses remaining to probability
+        for square, dist in distributions.items():
+            for h, (p, c) in list(dist.items()):
+                if c in dist:
+                    dist[c] += p
+                else:
+                    dist[c] = p
+                del dist[h]
+
         # choose which square by minimizing some function f
         min = math.inf
         self.sense = None
-        for square, dist in distributions:
+        for square, dist in distributions.items():
             # f = maximum number of hypotheses remaining
             f = max(dist, key=dist.get)
 
@@ -94,21 +126,24 @@ class AxolotlBot(Player):
 
     def handle_sense_result(self, sense_result: List[Tuple[Square, Optional[chess.Piece]]]):
         # parse sense result
-        board = chess.Board(None)
+        result = ""
+        sense_result.sort(key=lambda x: x[0])
         for square, piece in sense_result:
             if piece is not None:
-                board.set_piece_at(square, piece)
-        result = sense_board(board, self.sense)
+                result += piece.symbol()
+            else:
+                result += '.'
 
         # remove hypotheses with different sense result
         tot = 0
-        for h, p in self.hypotheses:
-            if result != sense_board(h, self.sense):
+        for h, p in list(self.hypotheses.items()):
+            s = self.expand_fen(h)
+            if result != self.sense_expanded_fen(s, self.sense):
                 tot += p
                 del self.hypotheses[h]
 
         # normalize probabilities
-        for h, p in self.hypotheses:
+        for h, p in self.hypotheses.items():
             self.hypotheses[h] = p / (1 - tot)
 
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:

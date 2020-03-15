@@ -4,7 +4,7 @@ import unittest
 from reconchess.bots.axolotl.axolotl import AxolotlBot
 
 
-class InitializationTestCase(unittest.TestCase):
+class GameStartTestCase(unittest.TestCase):
     def test_standard_board(self):
         bot = AxolotlBot()
         bot.handle_game_start(chess.WHITE, chess.Board(), "")
