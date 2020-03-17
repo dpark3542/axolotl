@@ -1,6 +1,9 @@
+import chess.engine
 import math
-import random
+import os
 from reconchess import *
+
+STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
 
 # Call a move partially legal if the move is not legal by normal chess rules, but does not result in a pass.
 # Example: A move by a queen that is blocked by an opponent piece. The move is not a pass as the queen takes the opponent piece.
@@ -13,28 +16,32 @@ from reconchess import *
 class AxolotlBot(Player):
     def __init__(self):
         self.color = None
-        self.hypotheses = None
+        self.friendly_board = None # chess.Board object of our pieces
+        self.hypotheses = None # dictionary mapping fen strings to probability
         self.sense = None
         self.move = None
 
+        if STOCKFISH_ENV_VAR not in os.environ:
+            raise Exception("No environment variable for Stockfish executable")
+        stockfish_path = os.environ[STOCKFISH_ENV_VAR]
+        if not os.path.exists(stockfish_path):
+            raise Exception("Stockfish executable not found at " + stockfish_path)
+        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
         self.color = color
-        self.hypotheses = {board.fen(shredder=True): 1}
-        # TODO: move to handle opponent move result
-        if color == board.turn:
-            self.hypotheses = {board.fen(shredder=True): 1}
+        self.friendly_board = board.copy(stack=False)
+        for square in range(64):
+            if board.color_at(square) != color:
+                self.friendly_board.remove_piece_at(square)
+        if color:
+            self.friendly_board.castling_rights &= chess.BB_A1 | chess.BB_H1
         else:
-            # assume opponent realizes they initially have perfect information and thus does not play partially legal moves
-            # remove case where opponent passes on normal starting board?
-            opponent_moves = list(board.pseudo_legal_moves)
-            n = len(opponent_moves) + 1
-            self.hypotheses = {board.fen(shredder=True): 1 / n}
-            for move in opponent_moves:
-                board.push(move)
-                self.hypotheses[board.fen(shredder=True)] = 1 / n
-                board.pop()
+            self.friendly_board.castling_rights &= chess.BB_A8 | chess.BB_H8
+        self.hypotheses = {board.fen(shredder=True): 1}
 
     def handle_opponent_move_result(self, captured_my_piece: bool, capture_square: Optional[Square]):
+        self.friendly_board.push(chess.Move.null())
         if captured_my_piece:
             # calculate next hypotheses and their probabilities of the board after opponent's turn
             # calculate new hypotheses and probabilities using information about capture
@@ -147,10 +154,155 @@ class AxolotlBot(Player):
             self.hypotheses[h] = p / (1 - tot)
 
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
-        return random.choice(move_actions + [None])
+        distributions = {}  # maps move to (unsorted) distribution of scores
+
+        # create an ordering of moves
+        graph = {}
+        move_process_order = [chess.Move.null()]
+        piece_map = self.friendly_board.piece_map()
+
+        # pawns
+        for from_square in self.friendly_board.pieces(chess.PAWN, self.color):
+            # single push
+            if from_square < 56:
+                graph[chess.Move(from_square, from_square + 8)] = chess.Move.null()
+                move_process_order.append(chess.Move(from_square, from_square + 8))
+            else:
+                for type in range(2, 6):
+                    graph[chess.Move(from_square, from_square + 8, type)] = chess.Move.null()
+                    move_process_order.append(chess.Move(from_square, from_square + 8, type))
+            # double push
+            if 8 <= from_square <= 15:
+                graph[chess.Move(from_square, from_square + 16)] = chess.Move(from_square, from_square + 8)
+                move_process_order.append(chess.Move(from_square, from_square + 16))
+            # left capture
+            if from_square % 8 != 0:
+                if from_square < 56:
+                    graph[chess.Move(from_square, from_square + 7)] = chess.Move.null()
+                    move_process_order.append(chess.Move(from_square, from_square + 7))
+                else:
+                    for type in range(2, 6):
+                        graph[chess.Move(from_square, from_square + 7, type)] = chess.Move.null()
+                        move_process_order.append(chess.Move(from_square, from_square + 7, type))
+            # right capture
+            if from_square % 8 != 7:
+                if from_square < 56:
+                    graph[chess.Move(from_square, from_square + 9)] = chess.Move.null()
+                    move_process_order.append(chess.Move(from_square, from_square + 9))
+                else:
+                    for type in range(2, 6):
+                        graph[chess.Move(from_square, from_square + 9, type)] = chess.Move.null()
+                        move_process_order.append(chess.Move(from_square, from_square + 9, type))
+        # knights
+        for from_square in self.friendly_board.pieces(chess.KNIGHT, self.color):
+            for d in [6, 10, 15, 17]:
+                if 0 <= from_square + d < 64:
+                    move_process_order.append(from_square + d)
+                if 0 <= from_square - d < 64:
+                    move_process_order.append(from_square - d)
+        # bishops
+        for from_square in self.friendly_board.pieces(chess.BISHOP, self.color):
+            for d in [7, 9, -7, -9]:
+                to_square = from_square + d
+                while 0 <= to_square < 64:
+                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
+                    move_process_order.append(chess.Move(from_square, to_square))
+                    to_square += d
+        # rooks
+        for from_square in self.friendly_board.pieces(chess.ROOK, self.color):
+            for d in [1, 8, -1, -8]:
+                to_square = from_square + d
+                while 0 <= to_square < 64:
+                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
+                    move_process_order.append(chess.Move(from_square, to_square))
+                    to_square += d
+        # queens
+        for from_square in self.friendly_board.pieces(chess.QUEEN, self.color):
+            for d in [1, 7, 8, 9, -1, -7, -8, -9]:
+                to_square = from_square + d
+                while 0 <= to_square < 64:
+                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
+                    move_process_order.append(chess.Move(from_square, to_square))
+                    to_square += d
+        # kings
+        king_square = self.friendly_board.king(self.color)
+        for d in [1, 7, 8, 9]:
+            if 0 <= king_square + d < 64:
+                move_process_order.append(king_square + d)
+            if 0 <= king_square - d < 64:
+                move_process_order.append(king_square - d)
+        # castling
+        if self.friendly_board.has_kingside_castling_rights(self.color):
+            if self.color:
+                graph[chess.Move.from_uci("e1g1")] = chess.Move.null()
+                move_process_order.append(chess.Move.from_uci("e1g1"))
+            else:
+                graph[chess.Move.from_uci("e8g8")] = chess.Move.null()
+                move_process_order.append(chess.Move.from_uci("e8g8"))
+        if self.friendly_board.has_queenside_castling_rights(self.color):
+            if self.color:
+                graph[chess.Move.from_uci("e1c1")] = chess.Move.null()
+                move_process_order.append(chess.Move.from_uci("e1c1"))
+            else:
+                graph[chess.Move.from_uci("e8c8")] = chess.Move.null()
+                move_process_order.append(chess.Move.from_uci("e8c8"))
+
+        # find distributions
+        for move in move_process_order:
+            distributions[move] = []
+        time = (seconds_left - 1) / (len(self.hypotheses) * len(move_process_order))
+        for h, p in self.hypotheses.items():
+            board = chess.Board(h)
+            for move in move_process_order:
+                # legal move
+                if move in move_actions:
+                    if move.to_square == board.king(not self.color):
+                        distributions[move].append(math.inf)
+                    else:
+                        info = self.engine.analyse(board, chess.engine.Limit(time=time), root_moves=[move])
+                        score = info["score"].pov(self.color)
+                        if score.is_mate():
+                            distributions[move].append(-math.inf)
+                        else:
+                            distributions[move].append(score.score())
+                # blocked move
+                else:
+                    distributions[move] = distributions[graph[move]]
+
+        # choose move by maximizing some function f
+        max = -math.inf
+        self.move = None
+        for move, dist in distributions.items():
+            # f is min score
+            f = min(dist)
+
+            # f is expected value
+            # f = 0
+            # p = list(self.hypotheses.values())
+            # for i in range(len(p)):
+            #     f += p[i] * dist[i]
+
+            # take max
+            if f > max:
+                max = f
+                self.move = move
+
+        return self.move
 
     def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):
-        pass
+        if taken_move is None:
+            self.friendly_board.push(chess.Move.null())
+
+        else:
+            self.friendly_board.push(taken_move)
 
     def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason], game_history: GameHistory):
-        pass
+        self.color = None
+        self.hypotheses = None
+        self.sense = None
+        self.move = None
+        try:
+            self.engine.quit()
+            self.engine = None
+        except chess.engine.EngineTerminatedError:
+            pass
