@@ -1,6 +1,7 @@
+import chess
 import unittest
 
-from reconchess.bots.axolotl.axolotl import AxolotlBot, chess
+from reconchess.bots.axolotl.axolotl import AxolotlBot
 
 
 class ChooseSenseTestCase(unittest.TestCase):

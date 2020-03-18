@@ -153,109 +153,84 @@ class AxolotlBot(Player):
         for h, p in self.hypotheses.items():
             self.hypotheses[h] = p / (1 - tot)
 
-    def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
-        distributions = {}  # maps move to (unsorted) distribution of scores
+    def generate_submove_graph(self):
+        g = {}
+        root = chess.Move.null()
 
-        # create an ordering of moves
-        graph = {}
-        move_process_order = [chess.Move.null()]
-        piece_map = self.friendly_board.piece_map()
+        # slide moves
+        for a in range(64):
+            # move to the right
+            for d in [-7, 1, 9]:
+                b = a + d
+                if 0 <= b < 64 and b % 8 != 0:
+                    g[chess.Move(a, b)] = root
+                b = a + 2 * d
+                while 0 <= b < 64 and b % 8 != 0:
+                    g[chess.Move(a, b)] = chess.Move(a, b - d)
+                    b += d
+            # move to the left
+            for d in [-9, 1, 7]:
+                b = a + d
+                if 0 <= b < 64 and b % 8 != 7:
+                    g[chess.Move(a, b)] = root
+                b = a + 2 * d
+                while 0 <= b < 64 and b % 8 != 7:
+                    g[chess.Move(a, b)] = chess.Move(a, b - d)
+                    b += d
+            # move vertically
+            for d in [-8, 8]:
+                b = a + d
+                if 0 <= b < 64:
+                    g[chess.Move(a, b)] = root
+                b = a + 2 * d
+                while 0 <= b < 64:
+                    g[chess.Move(a, b)] = chess.Move(a, b - d)
+                    b += d
 
-        # pawns
-        for from_square in self.friendly_board.pieces(chess.PAWN, self.color):
-            # single push
-            if from_square < 56:
-                graph[chess.Move(from_square, from_square + 8)] = chess.Move.null()
-                move_process_order.append(chess.Move(from_square, from_square + 8))
-            else:
-                for type in range(2, 6):
-                    graph[chess.Move(from_square, from_square + 8, type)] = chess.Move.null()
-                    move_process_order.append(chess.Move(from_square, from_square + 8, type))
-            # double push
-            if 8 <= from_square <= 15:
-                graph[chess.Move(from_square, from_square + 16)] = chess.Move(from_square, from_square + 8)
-                move_process_order.append(chess.Move(from_square, from_square + 16))
-            # left capture
-            if from_square % 8 != 0:
-                if from_square < 56:
-                    graph[chess.Move(from_square, from_square + 7)] = chess.Move.null()
-                    move_process_order.append(chess.Move(from_square, from_square + 7))
-                else:
-                    for type in range(2, 6):
-                        graph[chess.Move(from_square, from_square + 7, type)] = chess.Move.null()
-                        move_process_order.append(chess.Move(from_square, from_square + 7, type))
-            # right capture
-            if from_square % 8 != 7:
-                if from_square < 56:
-                    graph[chess.Move(from_square, from_square + 9)] = chess.Move.null()
-                    move_process_order.append(chess.Move(from_square, from_square + 9))
-                else:
-                    for type in range(2, 6):
-                        graph[chess.Move(from_square, from_square + 9, type)] = chess.Move.null()
-                        move_process_order.append(chess.Move(from_square, from_square + 9, type))
-        # knights
-        for from_square in self.friendly_board.pieces(chess.KNIGHT, self.color):
-            for d in [6, 10, 15, 17]:
-                if 0 <= from_square + d < 64:
-                    move_process_order.append(from_square + d)
-                if 0 <= from_square - d < 64:
-                    move_process_order.append(from_square - d)
-        # bishops
-        for from_square in self.friendly_board.pieces(chess.BISHOP, self.color):
-            for d in [7, 9, -7, -9]:
-                to_square = from_square + d
-                while 0 <= to_square < 64:
-                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
-                    move_process_order.append(chess.Move(from_square, to_square))
-                    to_square += d
-        # rooks
-        for from_square in self.friendly_board.pieces(chess.ROOK, self.color):
-            for d in [1, 8, -1, -8]:
-                to_square = from_square + d
-                while 0 <= to_square < 64:
-                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
-                    move_process_order.append(chess.Move(from_square, to_square))
-                    to_square += d
-        # queens
-        for from_square in self.friendly_board.pieces(chess.QUEEN, self.color):
-            for d in [1, 7, 8, 9, -1, -7, -8, -9]:
-                to_square = from_square + d
-                while 0 <= to_square < 64:
-                    graph[chess.Move(from_square, to_square)] = chess.Move(from_square, to_square - d)
-                    move_process_order.append(chess.Move(from_square, to_square))
-                    to_square += d
-        # kings
-        king_square = self.friendly_board.king(self.color)
-        for d in [1, 7, 8, 9]:
-            if 0 <= king_square + d < 64:
-                move_process_order.append(king_square + d)
-            if 0 <= king_square - d < 64:
-                move_process_order.append(king_square - d)
         # castling
         if self.friendly_board.has_kingside_castling_rights(self.color):
             if self.color:
-                graph[chess.Move.from_uci("e1g1")] = chess.Move.null()
-                move_process_order.append(chess.Move.from_uci("e1g1"))
+                g[chess.Move.from_uci("e1g1")] = root
             else:
-                graph[chess.Move.from_uci("e8g8")] = chess.Move.null()
-                move_process_order.append(chess.Move.from_uci("e8g8"))
+                g[chess.Move.from_uci("e8g8")] = root
         if self.friendly_board.has_queenside_castling_rights(self.color):
             if self.color:
-                graph[chess.Move.from_uci("e1c1")] = chess.Move.null()
-                move_process_order.append(chess.Move.from_uci("e1c1"))
+                g[chess.Move.from_uci("e1c1")] = root
             else:
-                graph[chess.Move.from_uci("e8c8")] = chess.Move.null()
-                move_process_order.append(chess.Move.from_uci("e8c8"))
+                g[chess.Move.from_uci("e8c8")] = root
+
+        return g
+
+    def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
+        distributions = {}  # maps move to distribution of scores
+        for move in move_actions:
+            distributions[move] = []
+
+        # create an ordering of moves
+        graph = self.generate_submove_graph()
+        move_actions.remove(chess.Move.null())
+        move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
 
         # find distributions
-        for move in move_process_order:
-            distributions[move] = []
-        time = (seconds_left - 1) / (len(self.hypotheses) * len(move_process_order))
+        time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
         for h, p in self.hypotheses.items():
             board = chess.Board(h)
-            for move in move_process_order:
+            legal_moves = set(board.pseudo_legal_moves)
+
+            # do null move (root) first
+            board.push(chess.Move.null())
+            info = self.engine.analyse(board, chess.engine.Limit(time=time))
+            score = info["score"].pov(self.color)
+            if score.is_mate():
+                distributions[chess.Move.null()].append(-math.inf)
+            else:
+                distributions[chess.Move.null()].append(score.score())
+            board.pop()
+
+            # do rest of moves
+            for move in move_actions:
                 # legal move
-                if move in move_actions:
+                if move in legal_moves:
                     if move.to_square == board.king(not self.color):
                         distributions[move].append(math.inf)
                     else:
@@ -267,7 +242,10 @@ class AxolotlBot(Player):
                             distributions[move].append(score.score())
                 # blocked move
                 else:
-                    distributions[move] = distributions[graph[move]]
+                    distributions[move].append(distributions[graph[move]][-1])
+
+        # for move, dist in distributions.itmes():
+        #     dist.sort()
 
         # choose move by maximizing some function f
         max = -math.inf
@@ -292,7 +270,7 @@ class AxolotlBot(Player):
     def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):
         if taken_move is None:
             self.friendly_board.push(chess.Move.null())
-
+            
         else:
             self.friendly_board.push(taken_move)
 
