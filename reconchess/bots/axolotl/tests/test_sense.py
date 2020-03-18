@@ -1,6 +1,8 @@
 import chess
 import unittest
 
+from reconchess import GameHistory
+
 from reconchess.bots.axolotl.axolotl import AxolotlBot
 
 
@@ -9,6 +11,7 @@ class ChooseSenseTestCase(unittest.TestCase):
         bot = AxolotlBot()
         bot.hypotheses = {chess.STARTING_BOARD_FEN: 0.5, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR w Kkq - 0 1": 0.5}
         self.assertEqual(chess.B2, bot.choose_sense([], [], 10))
+        bot.handle_game_end(None, None, GameHistory())
 
 
 class SenseResultTestCase(unittest.TestCase):
@@ -30,6 +33,7 @@ class SenseResultTestCase(unittest.TestCase):
         ])
         self.assertIn(chess.STARTING_BOARD_FEN, bot.hypotheses)
         self.assertEqual(1.0, bot.hypotheses[chess.STARTING_BOARD_FEN])
+        bot.handle_game_end(None, None, GameHistory())
 
     def test_false(self):
         bot = AxolotlBot()
@@ -48,6 +52,7 @@ class SenseResultTestCase(unittest.TestCase):
             (chess.C3, chess.Piece(chess.PAWN, chess.WHITE))
         ])
         self.assertEqual(0, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
 
 
 if __name__ == '__main__':

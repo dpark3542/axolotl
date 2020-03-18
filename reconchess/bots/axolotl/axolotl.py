@@ -16,21 +16,17 @@ STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
 class AxolotlBot(Player):
     def __init__(self):
         self.color = None
-        self.friendly_board = None # chess.Board object of our pieces
-        self.hypotheses = None # dictionary mapping fen strings to probability
+        self.friendly_board = None  # chess.Board object of our pieces
+        self.hypotheses = None  # dictionary mapping fen strings to probability
         self.sense = None
         self.move = None
-
-        if STOCKFISH_ENV_VAR not in os.environ:
-            raise Exception("No environment variable for Stockfish executable")
-        stockfish_path = os.environ[STOCKFISH_ENV_VAR]
-        if not os.path.exists(stockfish_path):
-            raise Exception("Stockfish executable not found at " + stockfish_path)
-        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+        self.engine = None
 
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
         self.color = color
         self.friendly_board = board.copy(stack=False)
+
+        # friendly board
         for square in range(64):
             if board.color_at(square) != color:
                 self.friendly_board.remove_piece_at(square)
@@ -40,16 +36,48 @@ class AxolotlBot(Player):
             self.friendly_board.castling_rights &= chess.BB_A8 | chess.BB_H8
         self.hypotheses = {board.fen(shredder=True): 1}
 
+        # engine
+        if STOCKFISH_ENV_VAR not in os.environ:
+            raise Exception("No environment variable for Stockfish executable")
+        stockfish_path = os.environ[STOCKFISH_ENV_VAR]
+        if not os.path.exists(stockfish_path):
+            raise Exception("Stockfish executable not found at " + stockfish_path)
+        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+
     def handle_opponent_move_result(self, captured_my_piece: bool, capture_square: Optional[Square]):
         self.friendly_board.push(chess.Move.null())
-        if captured_my_piece:
-            # calculate next hypotheses and their probabilities of the board after opponent's turn
-            # calculate new hypotheses and probabilities using information about capture
-            pass
-        else:
-            # calculate next hypotheses and their probabilities of the board after opponent's turn
-            # calculate new hypotheses and probabilities using information about capture
-            pass
+        # Calculate next hypotheses and their probabilities of the board after opponent's turn.
+        # Assume opponent is equally likely to choose any valid move.
+        # In practice, opponents do not seem to play invalid moves such as invalid pawn captures.
+        # Then assume the probability the opponent plays an invalid move/pass is equal to the probability of any valid move.
+        new_hypotheses = {}
+        for h, p in self.hypotheses.items():
+            board = chess.Board(h)
+            if captured_my_piece:
+                moves = list(board.generate_pseudo_legal_captures(to_mask=chess.BB_SQUARES[capture_square]))
+            else:
+                moves = set(board.pseudo_legal_moves) - set(board.generate_pseudo_legal_captures())
+                moves.add(chess.Move.null())
+                # castling
+                if board.has_kingside_castling_rights(not self.color):
+                    if self.color == chess.BLACK and board.color_at(chess.F1) is None and board.color_at(chess.G1) is None:
+                        moves.add(chess.Move.from_uci("e1g1"))
+                    if self.color == chess.WHITE and board.color_at(chess.F8) is None and board.color_at(chess.G8) is None:
+                        moves.add(chess.Move.from_uci("e8g8"))
+                if board.has_queenside_castling_rights(not self.color):
+                    if self.color == chess.BLACK and board.color_at(chess.D1) is None and board.color_at(chess.C1) is None and board.color_at(chess.B1) is None:
+                        moves.add(chess.Move.from_uci("e1c1"))
+                    if self.color == chess.WHITE and board.color_at(chess.D8) is None and board.color_at(chess.C8) is None and board.color_at(chess.B8) is None:
+                        moves.add(chess.Move.from_uci("e8c8"))
+            for move in moves:
+                board.push(move)
+                fen = board.fen(shredder=True)
+                if fen in new_hypotheses:
+                    new_hypotheses[fen] += p / len(moves)
+                else:
+                    new_hypotheses[fen] = p / len(moves)
+                board.pop()
+        self.hypotheses = new_hypotheses
 
     @staticmethod
     def expand_fen(fen):
@@ -154,6 +182,15 @@ class AxolotlBot(Player):
             self.hypotheses[h] = p / (1 - tot)
 
     def generate_submove_graph(self):
+        """
+        Returns a directed graph of chess moves in the form of a dictionary.
+        u -> v is an edge if the path a piece travels when performing move v is the maximum proper subset of the path for u.
+        For example, Bc1e3 -> Bc1d2 and f2f4 -> f2f3 are edges.
+        Only paths taken by pawns, bishops, rooks, queens, and kings are included.
+        Castling is included.
+        The null move is considered a valid move.
+        :return: directed graph of submoves
+        """
         g = {}
         root = chess.Move.null()
 
@@ -202,22 +239,20 @@ class AxolotlBot(Player):
         return g
 
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
-        distributions = {}  # maps move to distribution of scores
+        distributions = {}  # maps move to (unsorted) distribution of scores
         for move in move_actions:
             distributions[move] = []
-
-        # create an ordering of moves
-        graph = self.generate_submove_graph()
-        move_actions.remove(chess.Move.null())
+        graph = self.generate_submove_graph()  # see generate_submove_graph for details
+        # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
         move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
+        time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
 
         # find distributions
-        time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
         for h, p in self.hypotheses.items():
             board = chess.Board(h)
             legal_moves = set(board.pseudo_legal_moves)
 
-            # do null move (root) first
+            # process null move (root) first
             board.push(chess.Move.null())
             info = self.engine.analyse(board, chess.engine.Limit(time=time))
             score = info["score"].pov(self.color)
@@ -227,7 +262,7 @@ class AxolotlBot(Player):
                 distributions[chess.Move.null()].append(score.score())
             board.pop()
 
-            # do rest of moves
+            # process rest of moves
             for move in move_actions:
                 # legal move
                 if move in legal_moves:
@@ -244,7 +279,8 @@ class AxolotlBot(Player):
                 else:
                     distributions[move].append(distributions[graph[move]][-1])
 
-        # for move, dist in distributions.itmes():
+        # sort distributions
+        # for move, dist in distributions.items():
         #     dist.sort()
 
         # choose move by maximizing some function f
@@ -254,17 +290,13 @@ class AxolotlBot(Player):
             # f is min score
             f = min(dist)
 
-            # f is expected value
-            # f = 0
-            # p = list(self.hypotheses.values())
-            # for i in range(len(p)):
-            #     f += p[i] * dist[i]
-
             # take max
             if f > max:
                 max = f
                 self.move = move
 
+        if self.move == chess.Move.null():
+            return None
         return self.move
 
     def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):

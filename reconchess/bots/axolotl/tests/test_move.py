@@ -2,6 +2,7 @@ import chess
 import unittest
 
 from reconchess import GameHistory
+
 from reconchess.bots.axolotl.axolotl import AxolotlBot
 
 
