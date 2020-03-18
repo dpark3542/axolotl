@@ -5,6 +5,7 @@ from reconchess import *
 
 STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
 
+
 # Call a move partially legal if the move is not legal by normal chess rules, but does not result in a pass.
 # Example: A move by a queen that is blocked by an opponent piece. The move is not a pass as the queen takes the opponent piece.
 #
@@ -60,14 +61,18 @@ class AxolotlBot(Player):
                 moves.add(chess.Move.null())
                 # castling
                 if board.has_kingside_castling_rights(not self.color):
-                    if self.color == chess.BLACK and board.color_at(chess.F1) is None and board.color_at(chess.G1) is None:
+                    if self.color == chess.BLACK and board.color_at(chess.F1) is None and board.color_at(
+                            chess.G1) is None:
                         moves.add(chess.Move.from_uci("e1g1"))
-                    if self.color == chess.WHITE and board.color_at(chess.F8) is None and board.color_at(chess.G8) is None:
+                    if self.color == chess.WHITE and board.color_at(chess.F8) is None and board.color_at(
+                            chess.G8) is None:
                         moves.add(chess.Move.from_uci("e8g8"))
                 if board.has_queenside_castling_rights(not self.color):
-                    if self.color == chess.BLACK and board.color_at(chess.D1) is None and board.color_at(chess.C1) is None and board.color_at(chess.B1) is None:
+                    if self.color == chess.BLACK and board.color_at(chess.D1) is None and board.color_at(
+                            chess.C1) is None and board.color_at(chess.B1) is None:
                         moves.add(chess.Move.from_uci("e1c1"))
-                    if self.color == chess.WHITE and board.color_at(chess.D8) is None and board.color_at(chess.C8) is None and board.color_at(chess.B8) is None:
+                    if self.color == chess.WHITE and board.color_at(chess.D8) is None and board.color_at(
+                            chess.C8) is None and board.color_at(chess.B8) is None:
                         moves.add(chess.Move.from_uci("e8c8"))
             for move in moves:
                 board.push(move)
@@ -142,7 +147,7 @@ class AxolotlBot(Player):
                 del dist[h]
 
         # choose which square by minimizing some function f
-        min = math.inf
+        fmin = math.inf
         self.sense = None
         for square, dist in distributions.items():
             # f = maximum number of hypotheses remaining
@@ -154,8 +159,8 @@ class AxolotlBot(Player):
             #     f += n * p
 
             # take min
-            if f < min:
-                min = f
+            if f < fmin:
+                fmin = f
                 self.sense = square
         return self.sense
 
@@ -239,12 +244,13 @@ class AxolotlBot(Player):
         return g
 
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
-        distributions = {}  # maps move to (unsorted) distribution of scores
+        distributions = {chess.Move.null(): []}  # maps move to (unsorted) distribution of scores
         for move in move_actions:
             distributions[move] = []
         graph = self.generate_submove_graph()  # see generate_submove_graph for details
         # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
-        move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
+        move_actions.sort(
+            key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
         time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
 
         # find distributions
@@ -284,29 +290,101 @@ class AxolotlBot(Player):
         #     dist.sort()
 
         # choose move by maximizing some function f
-        max = -math.inf
+        fmax = -math.inf
         self.move = None
         for move, dist in distributions.items():
             # f is min score
             f = min(dist)
 
             # take max
-            if f > max:
-                max = f
+            if f > fmax:
+                fmax = f
                 self.move = move
 
         if self.move == chess.Move.null():
             return None
         return self.move
 
-    def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):
+    @staticmethod
+    def check_move(board, move, color, capture=None, capture_square=None):
+        """
+        Returns if move is legal on the board according to rbmc's rules.
+        For example, castling has stricter requirements on rbmc.
+        Pseudo legal moves such as blocked slide moves and blocked pawn pushes are not considered legal.
+        If capture info is provided, will further check if move is a legal capture/quiet move on a particular capture square.
+        :param board: board
+        :param move: move
+        :param color: color of player performing move
+        :param capture: if move results in a capture
+        :param capture_square: capture square
+        :return: boolean if move is legal and matches capture info
+        """
+        # null move
+        if move is None:
+            if capture is None:
+                return True
+            else:
+                return not capture
+        # kingside castle
+        elif board.is_kingside_castling(move):
+            if not board.has_kingside_castling_rights(color):
+                return False
+            if capture is None:
+                return True
+            else:
+                return not capture
+        # queenside castle
+        elif board.is_queenside_castling(move):
+            if not board.has_queenside_castling_rights(color):
+                return False
+            if capture is None:
+                return True
+            else:
+                return not capture
+        # all other moves (board.pseudo_legal_moves)
+        else:
+            if capture is None:
+                return move in board.pseudo_legal_moves
+            elif capture:
+                return move in board.generate_pseudo_legal_captures(to_mask=chess.BB_SQUARES[capture_square])
+            else:
+                return move in set(board.pseudo_legal_moves) - set(board.generate_pseudo_legal_captures())
+
+    def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move],
+                           captured_opponent_piece: bool, capture_square: Optional[Square]):
+        # update friendly_board
         if taken_move is None:
             self.friendly_board.push(chess.Move.null())
-            
         else:
             self.friendly_board.push(taken_move)
 
-    def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason], game_history: GameHistory):
+        # update hypotheses
+        # taken_move is equal to requested_move, is a blocked sliding capture move, or is a blocked pawn push, pawn capture, or castle.
+        new_hypotheses = {}
+        tot = 0
+        for h, p in self.hypotheses.items():
+            board = chess.Board(h)
+            # flag if current hypothesis matches given info
+            if requested_move == taken_move:
+                # make sure requested_move = taken_move is legal in board and matches capture info
+                flag = self.check_move(board, requested_move, self.color, captured_opponent_piece, capture_square)
+            else:
+                # make sure requested_move is not legal, taken_move is legal, and taken_move matches capture info
+                flag = not self.check_move(board, requested_move, self.color)
+                flag &= self.check_move(board, taken_move, self.color, captured_opponent_piece, capture_square)
+            if flag:
+                board.push(taken_move)
+                new_hypotheses[board.fen(shredder=True)] = p
+            else:
+                tot += p
+
+        # normalize probabilities
+        self.hypotheses = new_hypotheses
+        for h, p in self.hypotheses.items():
+            self.hypotheses[h] = p / (1 - tot)
+
+    def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason],
+                        game_history: GameHistory):
         self.color = None
         self.hypotheses = None
         self.sense = None
