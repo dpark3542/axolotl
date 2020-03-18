@@ -100,7 +100,6 @@ class SenseResultTestCase(unittest.TestCase):
         bot.handle_game_start(chess.WHITE, chess.Board(), "")
         bot.hypotheses = {chess.STARTING_BOARD_FEN: 0.5, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR w Kkq - 0 1": 0.5}
         bot.sense = chess.B2
-        # don't know what order sense results come in
         bot.handle_sense_result([
             (chess.A1, chess.Piece(chess.ROOK, chess.WHITE)),
             (chess.B1, chess.Piece(chess.KNIGHT, chess.WHITE)),
@@ -121,7 +120,6 @@ class SenseResultTestCase(unittest.TestCase):
         bot.handle_game_start(chess.WHITE, chess.Board(), "")
         bot.hypotheses = {chess.STARTING_BOARD_FEN: 0.5, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/1NBQKBNR w Kkq - 0 1": 0.5}
         bot.sense = chess.B2
-        # don't know what order sense results come in
         bot.handle_sense_result([
             (chess.A1, chess.Piece(chess.ROOK, chess.WHITE)),
             (chess.B1, chess.Piece(chess.KNIGHT, chess.WHITE)),
@@ -147,6 +145,59 @@ class ChooseMoveTestCase(unittest.TestCase):
         for i in range(1, 8):
             moves.append(chess.Move.from_uci("abcdefgh"[i] + "2" + "abcdefgh"[i - 1] + "3"))
         self.assertNotEqual(chess.Move.null(), bot.choose_move(moves, 1.0))
+        bot.handle_game_end(None, None, GameHistory())
+
+        bot.handle_game_start(chess.WHITE, chess.Board("7k/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
+        moves = list(chess.Board("7k/b7/8/8/3P4/8/5K2/R7 w - - 0 1").pseudo_legal_moves)
+        moves.append(chess.Move.from_uci("d4c5"))
+        moves.append(chess.Move.from_uci("d4e5"))
+        self.assertEqual(chess.Move.from_uci("a1a7"), bot.choose_move(moves, 1.0))
+        bot.handle_game_end(None, None, GameHistory())
+
+
+class MoveResultTestCase(unittest.TestCase):
+    def test_basic(self):
+        bot = AxolotlBot()
+        bot.handle_game_start(chess.WHITE, chess.Board("8/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
+        bot.move = chess.Move.from_uci("a1a7")
+        bot.handle_move_result(chess.Move.from_uci("a1a7"), chess.Move.from_uci("a1a7"), True, chess.A7)
+        self.assertEqual(1, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
+
+    def test_false(self):
+        bot = AxolotlBot()
+        bot.handle_game_start(chess.WHITE, chess.Board("8/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
+        bot.move = chess.Move.from_uci("a1a7")
+        bot.handle_move_result(chess.Move.from_uci("a1a7"), chess.Move.from_uci("a1a7"), False, None)
+        self.assertEqual(0, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
+
+        bot.handle_game_start(chess.WHITE, chess.Board("8/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
+        bot.move = chess.Move.from_uci("a1a7")
+        bot.handle_move_result(chess.Move.from_uci("a1a7"), chess.Move.from_uci("a1a6"), False, None)
+        self.assertEqual(0, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
+
+    def test_blocked(self):
+        bot = AxolotlBot()
+        bot.handle_game_start(chess.WHITE, chess.Board("8/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
+        bot.move = chess.Move.from_uci("a1a8")
+        bot.handle_move_result(chess.Move.from_uci("a1a8"), chess.Move.from_uci("a1a7"), True, chess.A7)
+        self.assertEqual(1, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
+
+        bot.handle_game_start(chess.BLACK, chess.Board(), "")
+        bot.hypotheses = {"8/b7/8/8/3P4/8/5K2/R7 b - - 0 1": 0.5, "8/b7/8/8/8/8/5K2/R7 b - - 0 1": 0.5}
+        bot.move = chess.Move.from_uci("a7f2")
+        bot.handle_move_result(chess.Move.from_uci("a7f2"), chess.Move.from_uci("a7f2"), True, chess.F2)
+        self.assertEqual(1, len(bot.hypotheses))
+        bot.handle_game_end(None, None, GameHistory())
+
+        bot.handle_game_start(chess.BLACK, chess.Board(), "")
+        bot.hypotheses = {"8/b7/8/8/3P4/8/5K2/R7 b - - 0 1": 0.5, "8/b7/8/8/8/8/5K2/R7 b - - 0 1": 0.5}
+        bot.move = chess.Move.from_uci("a7f2")
+        bot.handle_move_result(chess.Move.from_uci("a7f2"), chess.Move.from_uci("a7d4"), True, chess.D4)
+        self.assertEqual(1, len(bot.hypotheses))
         bot.handle_game_end(None, None, GameHistory())
 
 

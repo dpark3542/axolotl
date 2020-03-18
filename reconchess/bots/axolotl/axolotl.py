@@ -23,6 +23,14 @@ class AxolotlBot(Player):
         self.move = None
         self.engine = None
 
+    def start_engine(self):
+        if STOCKFISH_ENV_VAR not in os.environ:
+            raise Exception("No environment variable for Stockfish executable")
+        stockfish_path = os.environ[STOCKFISH_ENV_VAR]
+        if not os.path.exists(stockfish_path):
+            raise Exception("Stockfish executable not found at " + stockfish_path)
+        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
         self.color = color
         self.friendly_board = board.copy(stack=False)
@@ -38,12 +46,7 @@ class AxolotlBot(Player):
         self.hypotheses = {board.fen(shredder=True): 1}
 
         # engine
-        if STOCKFISH_ENV_VAR not in os.environ:
-            raise Exception("No environment variable for Stockfish executable")
-        stockfish_path = os.environ[STOCKFISH_ENV_VAR]
-        if not os.path.exists(stockfish_path):
-            raise Exception("Stockfish executable not found at " + stockfish_path)
-        self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+        self.start_engine()
 
     def handle_opponent_move_result(self, captured_my_piece: bool, capture_square: Optional[Square]):
         self.friendly_board.push(chess.Move.null())
@@ -249,38 +252,69 @@ class AxolotlBot(Player):
             distributions[move] = []
         graph = self.generate_submove_graph()  # see generate_submove_graph for details
         # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
-        move_actions.sort(
-            key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
+        move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
         time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
 
         # find distributions
         for h, p in self.hypotheses.items():
             board = chess.Board(h)
+
+            # first check if we are in checkmate
+            if board.is_checkmate():
+                for move in move_actions:
+                    distributions[move] = 0
+                continue
+
+            # next check if we can take their king
+            if board.is_attacked_by(self.color, board.king(not self.color)):
+                for move in move_actions:
+                    if move.to_square == board.king(not self.color):
+                        distributions[move].append(math.inf)
+                    else:
+                        distributions[move].append(-math.inf)
+                continue
+
             legal_moves = set(board.pseudo_legal_moves)
 
             # process null move (root) first
             board.push(chess.Move.null())
-            info = self.engine.analyse(board, chess.engine.Limit(time=time))
-            score = info["score"].pov(self.color)
-            if score.is_mate():
-                distributions[chess.Move.null()].append(-math.inf)
-            else:
-                distributions[chess.Move.null()].append(score.score())
+            try:
+                info = self.engine.analyse(board, chess.engine.Limit(time=time))
+                score = info["score"].pov(self.color)
+                if score.is_mate():
+                    distributions[chess.Move.null()].append(score.mate() * math.inf)
+                else:
+                    distributions[chess.Move.null()].append(score.score())
+            except chess.engine.EngineTerminatedError:
+                distributions[chess.Move.null()].append(0)
+                print("Stockfish crashed.")
+                print("Time: " + str(time) + "s")
+                print("Board: ")
+                print(board)
+                print(str(board.fen(shredder=True)))
+                self.start_engine()
             board.pop()
 
             # process rest of moves
             for move in move_actions:
                 # legal move
                 if move in legal_moves:
-                    if move.to_square == board.king(not self.color):
-                        distributions[move].append(math.inf)
-                    else:
+                    try:
                         info = self.engine.analyse(board, chess.engine.Limit(time=time), root_moves=[move])
                         score = info["score"].pov(self.color)
                         if score.is_mate():
-                            distributions[move].append(-math.inf)
+                            distributions[move].append(score.mate() * math.inf)
                         else:
                             distributions[move].append(score.score())
+                    except chess.engine.EngineTerminatedError:
+                        distributions[move].append(0)
+                        print("Stockfish crashed.")
+                        print("Time: " + str(time) + "s")
+                        print("Move: " + move.uci())
+                        print("Board: ")
+                        print(board)
+                        print(str(board.fen(shredder=True)))
+                        self.start_engine()
                 # blocked move
                 else:
                     distributions[move].append(distributions[graph[move]][-1])
@@ -308,7 +342,7 @@ class AxolotlBot(Player):
     @staticmethod
     def check_move(board, move, color, capture=None, capture_square=None):
         """
-        Returns if move is legal on the board according to rbmc's rules.
+        Returns if move is legal on the board according to rbmc rules.
         For example, castling has stricter requirements on rbmc.
         Pseudo legal moves such as blocked slide moves and blocked pawn pushes are not considered legal.
         If capture info is provided, will further check if move is a legal capture/quiet move on a particular capture square.
@@ -350,8 +384,7 @@ class AxolotlBot(Player):
             else:
                 return move in set(board.pseudo_legal_moves) - set(board.generate_pseudo_legal_captures())
 
-    def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move],
-                           captured_opponent_piece: bool, capture_square: Optional[Square]):
+    def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):
         # update friendly_board
         if taken_move is None:
             self.friendly_board.push(chess.Move.null())
@@ -383,8 +416,7 @@ class AxolotlBot(Player):
         for h, p in self.hypotheses.items():
             self.hypotheses[h] = p / (1 - tot)
 
-    def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason],
-                        game_history: GameHistory):
+    def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason], game_history: GameHistory):
         self.color = None
         self.hypotheses = None
         self.sense = None
