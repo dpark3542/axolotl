@@ -201,5 +201,52 @@ class MoveResultTestCase(unittest.TestCase):
         bot.handle_game_end(None, None, GameHistory())
 
 
+class BasicTestCases(unittest.TestCase):
+    def test_one_turn(self):
+        board = chess.Board()
+
+        bot = AxolotlBot()
+        bot.handle_game_start(chess.BLACK, chess.Board(), "")
+
+        board.push(chess.Move.from_uci("e2e4"))
+
+        self.assertEqual(1, len(bot.hypotheses))
+
+        bot.handle_opponent_move_result(False, None)
+
+        self.assertEqual(21, len(bot.hypotheses))
+
+        moves = list(board.pseudo_legal_moves)
+        for i in range(7):
+            moves.append(chess.Move.from_uci("abcdefgh"[i] + "7" + "abcdefgh"[i + 1] + "6"))
+        for i in range(1, 8):
+            moves.append(chess.Move.from_uci("abcdefgh"[i] + "7" + "abcdefgh"[i - 1] + "6"))
+
+        sense = bot.choose_sense(chess.BB_SQUARES, moves, 10)
+
+        # code for sense from reconchess.LocalGame
+        rank, file = chess.square_rank(sense), chess.square_file(sense)
+        sense_result = []
+        for delta_rank in [1, 0, -1]:
+            for delta_file in [-1, 0, 1]:
+                if 0 <= rank + delta_rank <= 7 and 0 <= file + delta_file <= 7:
+                    sense_square = chess.square(file + delta_file, rank + delta_rank)
+                    sense_result.append((sense_square, board.piece_at(sense_square)))
+
+        bot.handle_sense_result(sense_result)
+
+        self.assertLess(1, len(bot.hypotheses))
+
+        move = bot.choose_move(moves, 10)
+
+        if move in board.pseudo_legal_moves:
+            bot.handle_move_result(move, move, False, None)
+        else:
+            bot.handle_move_result(move, None, False, None)
+
+        self.assertLess(1, len(bot.hypotheses))
+
+        bot.handle_game_end(None, None, GameHistory())
+
 if __name__ == '__main__':
     unittest.main()

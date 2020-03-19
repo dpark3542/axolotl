@@ -1,6 +1,7 @@
 import chess.engine
 import math
 import os
+import re
 from reconchess import *
 
 STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
@@ -30,8 +31,12 @@ class AxolotlBot(Player):
         if not os.path.exists(stockfish_path):
             raise Exception("Stockfish executable not found at " + stockfish_path)
         self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
+        print("Starting new engine")
+        print("PID: " + re.findall(r'\d+', repr(self.engine))[0])
 
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
+        print("Game started against " + opponent_name)
+
         self.color = color
         self.friendly_board = board.copy(stack=False)
 
@@ -49,6 +54,12 @@ class AxolotlBot(Player):
         self.start_engine()
 
     def handle_opponent_move_result(self, captured_my_piece: bool, capture_square: Optional[Square]):
+        print("Handling opponent move result")
+        if self.friendly_board.turn == self.color:
+            print("It is our turn, opponent did not make a move.")
+            return
+        print("Hypotheses count (before): " + str(len(self.hypotheses)))
+
         self.friendly_board.push(chess.Move.null())
         # Calculate next hypotheses and their probabilities of the board after opponent's turn.
         # Assume opponent is equally likely to choose any valid move.
@@ -87,6 +98,8 @@ class AxolotlBot(Player):
                 board.pop()
         self.hypotheses = new_hypotheses
 
+        print("Hypotheses count (after): " + str(len(self.hypotheses)))
+
     @staticmethod
     def expand_fen(fen):
         """
@@ -117,6 +130,8 @@ class AxolotlBot(Player):
         return s[square - 9:square - 6] + s[square - 1:square + 2] + s[square + 7:square + 10]
 
     def choose_sense(self, sense_actions: List[Square], move_actions: List[chess.Move], seconds_left: float) -> Optional[Square]:
+        print("Choosing sense")
+
         # distributions will be a map from square to some distribution
         # initialize distributions
         distributions = {}
@@ -165,9 +180,18 @@ class AxolotlBot(Player):
             if f < fmin:
                 fmin = f
                 self.sense = square
+
+        print("Sensed square " + str(self.sense))
+
         return self.sense
 
     def handle_sense_result(self, sense_result: List[Tuple[Square, Optional[chess.Piece]]]):
+        print("Handling sense result")
+        print("Hypotheses count (before): " + str(len(self.hypotheses)))
+
+        if self.sense is None:
+            return
+
         # parse sense result
         result = ""
         sense_result.sort(key=lambda x: x[0])
@@ -188,6 +212,8 @@ class AxolotlBot(Player):
         # normalize probabilities
         for h, p in self.hypotheses.items():
             self.hypotheses[h] = p / (1 - tot)
+
+        print("Hypotheses count (after): " + str(len(self.hypotheses)))
 
     def generate_submove_graph(self):
         """
@@ -247,13 +273,16 @@ class AxolotlBot(Player):
         return g
 
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
+        print("Choosing move")
+
         distributions = {chess.Move.null(): []}  # maps move to (unsorted) distribution of scores
         for move in move_actions:
             distributions[move] = []
         graph = self.generate_submove_graph()  # see generate_submove_graph for details
         # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
         move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
-        time = (seconds_left - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
+        target_time = 10
+        time = (target_time - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
 
         # find distributions
         for h, p in self.hypotheses.items():
@@ -279,7 +308,7 @@ class AxolotlBot(Player):
             # process null move (root) first
             board.push(chess.Move.null())
             try:
-                info = self.engine.analyse(board, chess.engine.Limit(time=time))
+                info = self.engine.analyse(board, limit=chess.engine.Limit(time=time), info=chess.engine.INFO_SCORE)
                 score = info["score"].pov(self.color)
                 if score.is_mate():
                     distributions[chess.Move.null()].append(score.mate() * math.inf)
@@ -287,7 +316,7 @@ class AxolotlBot(Player):
                     distributions[chess.Move.null()].append(score.score())
             except chess.engine.EngineTerminatedError:
                 distributions[chess.Move.null()].append(0)
-                print("Stockfish crashed.")
+                print("Stockfish crashed")
                 print("Time: " + str(time) + "s")
                 print("Board: ")
                 print(board)
@@ -308,7 +337,7 @@ class AxolotlBot(Player):
                             distributions[move].append(score.score())
                     except chess.engine.EngineTerminatedError:
                         distributions[move].append(0)
-                        print("Stockfish crashed.")
+                        print("Stockfish crashed")
                         print("Time: " + str(time) + "s")
                         print("Move: " + move.uci())
                         print("Board: ")
@@ -334,6 +363,8 @@ class AxolotlBot(Player):
             if f > fmax:
                 fmax = f
                 self.move = move
+
+        print("Choose move " + self.move.uci())
 
         if self.move == chess.Move.null():
             return None
@@ -385,6 +416,9 @@ class AxolotlBot(Player):
                 return move in set(board.pseudo_legal_moves) - set(board.generate_pseudo_legal_captures())
 
     def handle_move_result(self, requested_move: Optional[chess.Move], taken_move: Optional[chess.Move], captured_opponent_piece: bool, capture_square: Optional[Square]):
+        print("Handling move result")
+        print("Hypotheses count (before): " + str(len(self.hypotheses)))
+
         # update friendly_board
         if taken_move is None:
             self.friendly_board.push(chess.Move.null())
@@ -416,7 +450,11 @@ class AxolotlBot(Player):
         for h, p in self.hypotheses.items():
             self.hypotheses[h] = p / (1 - tot)
 
+        print("Hypotheses count (after): " + str(len(self.hypotheses)))
+
     def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason], game_history: GameHistory):
+        print("Game ended")
+
         self.color = None
         self.hypotheses = None
         self.sense = None
@@ -424,5 +462,7 @@ class AxolotlBot(Player):
         try:
             self.engine.quit()
             self.engine = None
+            print("Shutting engine down")
         except chess.engine.EngineTerminatedError:
+            print("Engine already terminated")
             pass
