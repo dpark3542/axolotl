@@ -147,11 +147,13 @@ class ChooseMoveTestCase(unittest.TestCase):
         self.assertNotEqual(chess.Move.null(), bot.choose_move(moves, 1.0))
         bot.handle_game_end(None, None, GameHistory())
 
+    def test_basic_2(self):
+        bot = AxolotlBot()
         bot.handle_game_start(chess.WHITE, chess.Board("7k/b7/8/8/3P4/8/5K2/R7 w - - 0 1"), "")
         moves = list(chess.Board("7k/b7/8/8/3P4/8/5K2/R7 w - - 0 1").pseudo_legal_moves)
         moves.append(chess.Move.from_uci("d4c5"))
         moves.append(chess.Move.from_uci("d4e5"))
-        self.assertEqual(chess.Move.from_uci("a1a7"), bot.choose_move(moves, 1.0))
+        self.assertIn(bot.choose_move(moves, 1.0), [chess.Move.from_uci("a1a7"), chess.Move.from_uci("a1h1")])
         bot.handle_game_end(None, None, GameHistory())
 
 

@@ -275,14 +275,24 @@ class AxolotlBot(Player):
     def choose_move(self, move_actions: List[chess.Move], seconds_left: float) -> Optional[chess.Move]:
         print("Choosing move")
 
-        distributions = {chess.Move.null(): []}  # maps move to (unsorted) distribution of scores
-        for move in move_actions:
-            distributions[move] = []
+        distributions = {chess.Move.null(): {}}  # maps move to a distribution, each distribution is a map from score to probability
         graph = self.generate_submove_graph()  # see generate_submove_graph for details
         # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
-        move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square - x.to_square) % 8 + abs(x.from_square - x.to_square) // 8))
-        target_time = 10
+        move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square % 8 - x.to_square % 8) + abs(x.from_square // 8 - x.to_square // 8)))
+        for move in move_actions:
+            distributions[move] = {}
+
+        target_time = 20
         time = (target_time - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
+
+        def add(dictionary, key, value):
+            if key in dictionary:
+                dictionary[key] += value
+            else:
+                dictionary[key] = value
+
+        def sigmoid(x):
+            return 1 / (1 + math.pow(10, -x / 400))
 
         # find distributions
         for h, p in self.hypotheses.items():
@@ -291,37 +301,43 @@ class AxolotlBot(Player):
             # first check if we are in checkmate
             if board.is_checkmate():
                 for move in move_actions:
-                    distributions[move] = 0
+                    add(distributions[move], 0.5, p)
                 continue
 
             # next check if we can take their king
             if board.is_attacked_by(self.color, board.king(not self.color)):
                 for move in move_actions:
                     if move.to_square == board.king(not self.color):
-                        distributions[move].append(math.inf)
+                        add(distributions[move], 1.0, p)
                     else:
-                        distributions[move].append(-math.inf)
+                        add(distributions[move], 0.0, p)
                 continue
 
             legal_moves = set(board.pseudo_legal_moves)
+            scores = {}
 
             # process null move (root) first
             board.push(chess.Move.null())
             try:
-                info = self.engine.analyse(board, limit=chess.engine.Limit(time=time), info=chess.engine.INFO_SCORE)
+                info = self.engine.analyse(board, chess.engine.Limit(time=time), info=chess.engine.INFO_SCORE)
                 score = info["score"].pov(self.color)
                 if score.is_mate():
-                    distributions[chess.Move.null()].append(score.mate() * math.inf)
+                    if score.mate() > 0:
+                        scores[chess.Move.null()] = 1.0
+                    else:
+                        scores[chess.Move.null()] = 0.0
                 else:
-                    distributions[chess.Move.null()].append(score.score())
+                    scores[chess.Move.null()] = sigmoid(score.score())
             except chess.engine.EngineTerminatedError:
-                distributions[chess.Move.null()].append(0)
+                scores[chess.Move.null()] = 0.5
                 print("Stockfish crashed")
                 print("Time: " + str(time) + "s")
+                print("Move: None")
                 print("Board: ")
                 print(board)
                 print(str(board.fen(shredder=True)))
                 self.start_engine()
+            add(distributions[chess.Move.null()], scores[chess.Move.null()], p)
             board.pop()
 
             # process rest of moves
@@ -329,14 +345,17 @@ class AxolotlBot(Player):
                 # legal move
                 if move in legal_moves:
                     try:
-                        info = self.engine.analyse(board, chess.engine.Limit(time=time), root_moves=[move])
+                        info = self.engine.analyse(board, chess.engine.Limit(time=time), info=chess.engine.INFO_SCORE, root_moves=[move])
                         score = info["score"].pov(self.color)
                         if score.is_mate():
-                            distributions[move].append(score.mate() * math.inf)
+                            if score.mate() > 0:
+                                scores[move] = 1.0
+                            else:
+                                scores[move] = 0.0
                         else:
-                            distributions[move].append(score.score())
+                            scores[move] = sigmoid(score.score())
                     except chess.engine.EngineTerminatedError:
-                        distributions[move].append(0)
+                        scores[move] = 0.5
                         print("Stockfish crashed")
                         print("Time: " + str(time) + "s")
                         print("Move: " + move.uci())
@@ -346,18 +365,20 @@ class AxolotlBot(Player):
                         self.start_engine()
                 # blocked move
                 else:
-                    distributions[move].append(distributions[graph[move]][-1])
-
-        # sort distributions
-        # for move, dist in distributions.items():
-        #     dist.sort()
+                    scores[move] = scores[graph[move]]
+                add(distributions[move], scores[move], p)
 
         # choose move by maximizing some function f
         fmax = -math.inf
         self.move = None
         for move, dist in distributions.items():
             # f is min score
-            f = min(dist)
+            # f = min(dist)
+
+            # f is expected value of score
+            f = 0
+            for s, p in dist.items():
+                f += s * p
 
             # take max
             if f > fmax:
