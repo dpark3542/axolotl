@@ -5,6 +5,7 @@ import re
 from reconchess import *
 
 STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
+STOCKFISH_THREADS = 6
 
 
 # Call a move partially legal if the move is not legal by normal chess rules, but does not result in a pass.
@@ -25,13 +26,16 @@ class AxolotlBot(Player):
         self.engine = None
 
     def start_engine(self):
+        print("Starting new engine")
+
         if STOCKFISH_ENV_VAR not in os.environ:
             raise Exception("No environment variable for Stockfish executable")
         stockfish_path = os.environ[STOCKFISH_ENV_VAR]
         if not os.path.exists(stockfish_path):
             raise Exception("Stockfish executable not found at " + stockfish_path)
         self.engine = chess.engine.SimpleEngine.popen_uci(stockfish_path, setpgrp=True)
-        print("Starting new engine")
+        self.engine.configure({"Threads": STOCKFISH_THREADS})
+        
         print("PID: " + re.findall(r'\d+', repr(self.engine))[0])
 
     def handle_game_start(self, color: Color, board: chess.Board, opponent_name: str):
@@ -53,14 +57,40 @@ class AxolotlBot(Player):
         # engine
         self.start_engine()
 
+    def check_friendly_pieces(self):
+        """
+        Checks if all hypotheses have the same friendly pieces in the same positions as self.friendly_board.
+        Also checks our castling rights.
+        """
+        for h in self.hypotheses.keys():
+            board = chess.Board(h)
+            for square in range(64):
+                piece = self.friendly_board.piece_at(square)
+                h_piece = board.piece_at(square)
+                if piece is None:
+                    if h_piece is not None and h_piece.color == self.color:
+                        raise Exception("hypothesis does not match friendly board")
+                else:
+                    if h_piece != piece:
+                        raise Exception("hypothesis does not match friendly board")
+
+    def check_hypotheses(self, board):
+        if board.fen(shredder=True) not in self.hypotheses:
+            raise Exception("board not in hypotheses")
+
     def handle_opponent_move_result(self, captured_my_piece: bool, capture_square: Optional[Square]):
+        print("Turn " + str(self.friendly_board.fullmove_number))
         print("Handling opponent move result")
         if self.friendly_board.turn == self.color:
             print("It is our turn, opponent did not make a move.")
             return
         print("Hypotheses count (before): " + str(len(self.hypotheses)))
 
+        # update friendly board
         self.friendly_board.push(chess.Move.null())
+        if captured_my_piece:
+            self.friendly_board.remove_piece_at(capture_square)
+
         # Calculate next hypotheses and their probabilities of the board after opponent's turn.
         # Assume opponent is equally likely to choose any valid move.
         # In practice, opponents do not seem to play invalid moves such as invalid pawn captures.
@@ -181,7 +211,7 @@ class AxolotlBot(Player):
                 fmin = f
                 self.sense = square
 
-        print("Sensed square " + str(self.sense))
+        print("Sensed square " + chess.SQUARE_NAMES[self.sense])
 
         return self.sense
 
@@ -235,28 +265,28 @@ class AxolotlBot(Player):
                 b = a + d
                 if 0 <= b < 64 and b % 8 != 0:
                     g[chess.Move(a, b)] = root
-                b = a + 2 * d
-                while 0 <= b < 64 and b % 8 != 0:
-                    g[chess.Move(a, b)] = chess.Move(a, b - d)
-                    b += d
+                    b = a + 2 * d
+                    while 0 <= b < 64 and b % 8 != 0:
+                        g[chess.Move(a, b)] = chess.Move(a, b - d)
+                        b += d
             # move to the left
-            for d in [-9, 1, 7]:
+            for d in [-9, -1, 7]:
                 b = a + d
                 if 0 <= b < 64 and b % 8 != 7:
                     g[chess.Move(a, b)] = root
-                b = a + 2 * d
-                while 0 <= b < 64 and b % 8 != 7:
-                    g[chess.Move(a, b)] = chess.Move(a, b - d)
-                    b += d
+                    b = a + 2 * d
+                    while 0 <= b < 64 and b % 8 != 7:
+                        g[chess.Move(a, b)] = chess.Move(a, b - d)
+                        b += d
             # move vertically
             for d in [-8, 8]:
                 b = a + d
                 if 0 <= b < 64:
                     g[chess.Move(a, b)] = root
-                b = a + 2 * d
-                while 0 <= b < 64:
-                    g[chess.Move(a, b)] = chess.Move(a, b - d)
-                    b += d
+                    b = a + 2 * d
+                    while 0 <= b < 64:
+                        g[chess.Move(a, b)] = chess.Move(a, b - d)
+                        b += d
 
         # castling
         if self.friendly_board.has_kingside_castling_rights(self.color):
@@ -452,7 +482,7 @@ class AxolotlBot(Player):
         tot = 0
         for h, p in self.hypotheses.items():
             board = chess.Board(h)
-            # flag if current hypothesis matches given info
+            # flag is boolean representing if current hypothesis matches given info
             if requested_move == taken_move:
                 # make sure requested_move = taken_move is legal in board and matches capture info
                 flag = self.check_move(board, requested_move, self.color, captured_opponent_piece, capture_square)
@@ -461,7 +491,10 @@ class AxolotlBot(Player):
                 flag = not self.check_move(board, requested_move, self.color)
                 flag &= self.check_move(board, taken_move, self.color, captured_opponent_piece, capture_square)
             if flag:
-                board.push(taken_move)
+                if taken_move is None:
+                    board.push(chess.Move.null())
+                else:
+                    board.push(taken_move)
                 new_hypotheses[board.fen(shredder=True)] = p
             else:
                 tot += p
@@ -475,6 +508,10 @@ class AxolotlBot(Player):
 
     def handle_game_end(self, winner_color: Optional[Color], win_reason: Optional[WinReason], game_history: GameHistory):
         print("Game ended")
+        if winner_color == self.color:
+            print("We won")
+        else:
+            print("We lost")
 
         self.color = None
         self.hypotheses = None

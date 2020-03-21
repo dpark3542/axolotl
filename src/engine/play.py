@@ -1,8 +1,12 @@
 import chess
-from .types import *
-from .player import Player
-from .game import Game, LocalGame, RemoteGame
-from .history import GameHistory
+from reconchess.types import *
+from reconchess import Player
+from reconchess.game import Game, LocalGame, RemoteGame
+from reconchess.history import GameHistory
+
+from axolotl import AxolotlBot
+
+# modification of reconchess.scripts.play for debugging
 
 
 def play_local_game(white_player: Player, black_player: Player, game: LocalGame = None,
@@ -101,6 +105,9 @@ def notify_opponent_move_results(game: Game, player: Player):
     """
     opt_capture_square = game.opponent_move_results()
     player.handle_opponent_move_result(opt_capture_square is not None, opt_capture_square)
+    if isinstance(player, AxolotlBot) and isinstance(game, LocalGame):
+        player.check_hypotheses(game.board)
+        player.check_friendly_pieces()
 
 
 def play_sense(game: Game, player: Player, sense_actions: List[Square], move_actions: List[chess.Move]):
@@ -119,6 +126,9 @@ def play_sense(game: Game, player: Player, sense_actions: List[Square], move_act
     sense = player.choose_sense(sense_actions, move_actions, game.get_seconds_left())
     sense_result = game.sense(sense)
     player.handle_sense_result(sense_result)
+    if isinstance(player, AxolotlBot) and isinstance(game, LocalGame):
+        player.check_hypotheses(game.board)
+        player.check_friendly_pieces()
 
 
 def play_move(game: Game, player: Player, move_actions: List[chess.Move], end_turn_last=False):
@@ -146,6 +156,10 @@ def play_move(game: Game, player: Player, move_actions: List[chess.Move], end_tu
 
     player.handle_move_result(requested_move, taken_move,
                               opt_enemy_capture_square is not None, opt_enemy_capture_square)
+
+    if isinstance(player, AxolotlBot) and isinstance(game, LocalGame):
+        player.check_hypotheses(game.board)
+        player.check_friendly_pieces()
 
     if end_turn_last:
         game.end_turn()

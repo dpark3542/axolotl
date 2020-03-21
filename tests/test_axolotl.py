@@ -2,7 +2,7 @@ import unittest
 
 import chess
 from reconchess import GameHistory
-from reconchess.bots.axolotl.axolotl import AxolotlBot
+from src import AxolotlBot
 
 
 class GameStartTestCase(unittest.TestCase):
