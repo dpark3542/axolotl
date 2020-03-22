@@ -9,8 +9,7 @@ from axolotl import AxolotlBot
 # modification of reconchess.scripts.play for debugging
 
 
-def play_local_game(white_player: Player, black_player: Player, game: LocalGame = None,
-                    seconds_per_player: float = 900) -> Tuple[Optional[Color], Optional[WinReason], GameHistory]:
+def play_local_game(white_player: Player, black_player: Player, game: LocalGame = None, seconds_per_player: float = 900) -> Tuple[Optional[Color], Optional[WinReason], GameHistory]:
     """
     Plays a game between the two players passed in. Uses :class:`LocalGame` to run the game, and just calls
     :func:`play_turn` until the game is over: ::

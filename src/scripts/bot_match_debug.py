@@ -3,7 +3,7 @@ import datetime
 import random
 import chess
 from reconchess import load_player, LocalGame
-from engine.play import play_local_game
+from scripts.play_debug import play_local_game
 
 # modification of reconchess.scripts.rc_bot_match for debugging
 
@@ -12,8 +12,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('bot1_path', help='path to first bot source file')
     parser.add_argument('bot2_path', help='path to second bot source file')
-    parser.add_argument('--seconds_per_player', default=900, type=float,
-                        help='number of seconds each player has to play the entire game.')
+    parser.add_argument('--seconds_per_player', default=900, type=float, help='number of seconds each player has to play the entire game.')
     args = parser.parse_args()
 
     if random.randint(0, 1) == 0:

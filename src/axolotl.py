@@ -8,14 +8,6 @@ STOCKFISH_ENV_VAR = "STOCKFISH_EXECUTABLE"
 STOCKFISH_THREADS = 6
 
 
-# Call a move partially legal if the move is not legal by normal chess rules, but does not result in a pass.
-# Example: A move by a queen that is blocked by an opponent piece. The move is not a pass as the queen takes the opponent piece.
-#
-# Suppose we have hypotheses f_1,f_2,...,f_n occuring with probability p_1,p_2,...,p_n.
-# When handling a sense result, move result, or opponent move result, we receive some info.
-# P(true board = f_i | info) = P(info | true board = f_i) P(true board = f) / P(info)
-# P(info | true board = f_i) is always 0 or 1 for this game.
-# Then remove all hypotheses f_i where info does not hold and normalize the remaining probabilities.
 class AxolotlBot(Player):
     def __init__(self):
         self.color = None
@@ -52,7 +44,7 @@ class AxolotlBot(Player):
             self.friendly_board.castling_rights &= chess.BB_A1 | chess.BB_H1
         else:
             self.friendly_board.castling_rights &= chess.BB_A8 | chess.BB_H8
-        self.hypotheses = {board.fen(shredder=True): 1}
+        self.hypotheses = {board.fen(shredder=True): 1.0}
 
         # engine
         self.start_engine()
@@ -232,16 +224,15 @@ class AxolotlBot(Player):
                 result += '.'
 
         # remove hypotheses with different sense result
-        tot = 0
         for h, p in list(self.hypotheses.items()):
             s = self.expand_fen(h)
             if result != self.sense_expanded_fen(s, self.sense):
-                tot += p
                 del self.hypotheses[h]
 
         # normalize probabilities
+        tot = sum(self.hypotheses.values())
         for h, p in self.hypotheses.items():
-            self.hypotheses[h] = p / (1 - tot)
+            self.hypotheses[h] = p / tot
 
         print("Hypotheses count (after): " + str(len(self.hypotheses)))
 
@@ -312,7 +303,7 @@ class AxolotlBot(Player):
         for move in move_actions:
             distributions[move] = {}
 
-        target_time = 20
+        target_time = 30
         time = (target_time - 0.1) / (len(self.hypotheses) * (len(move_actions) + 1))
 
         def add(dictionary, key, value):
@@ -409,7 +400,7 @@ class AxolotlBot(Player):
             f = 0
             for s, p in dist.items():
                 f += s * p
-
+            print(move.uci() + " " + str(f))
             # take max
             if f > fmax:
                 fmax = f
@@ -479,7 +470,6 @@ class AxolotlBot(Player):
         # update hypotheses
         # taken_move is equal to requested_move, is a blocked sliding capture move, or is a blocked pawn push, pawn capture, or castle.
         new_hypotheses = {}
-        tot = 0
         for h, p in self.hypotheses.items():
             board = chess.Board(h)
             # flag is boolean representing if current hypothesis matches given info
@@ -496,13 +486,12 @@ class AxolotlBot(Player):
                 else:
                     board.push(taken_move)
                 new_hypotheses[board.fen(shredder=True)] = p
-            else:
-                tot += p
+        self.hypotheses = new_hypotheses
 
         # normalize probabilities
-        self.hypotheses = new_hypotheses
+        tot = sum(self.hypotheses.values())
         for h, p in self.hypotheses.items():
-            self.hypotheses[h] = p / (1 - tot)
+            self.hypotheses[h] = p / tot
 
         print("Hypotheses count (after): " + str(len(self.hypotheses)))
 
