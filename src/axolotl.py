@@ -97,18 +97,14 @@ class AxolotlBot(Player):
                 moves.add(chess.Move.null())
                 # castling
                 if board.has_kingside_castling_rights(not self.color):
-                    if self.color == chess.BLACK and board.color_at(chess.F1) is None and board.color_at(
-                            chess.G1) is None:
+                    if self.color == chess.BLACK and board.color_at(chess.F1) is None and board.color_at(chess.G1) is None:
                         moves.add(chess.Move.from_uci("e1g1"))
-                    if self.color == chess.WHITE and board.color_at(chess.F8) is None and board.color_at(
-                            chess.G8) is None:
+                    if self.color == chess.WHITE and board.color_at(chess.F8) is None and board.color_at(chess.G8) is None:
                         moves.add(chess.Move.from_uci("e8g8"))
                 if board.has_queenside_castling_rights(not self.color):
-                    if self.color == chess.BLACK and board.color_at(chess.D1) is None and board.color_at(
-                            chess.C1) is None and board.color_at(chess.B1) is None:
+                    if self.color == chess.BLACK and board.color_at(chess.D1) is None and board.color_at(chess.C1) is None and board.color_at(chess.B1) is None:
                         moves.add(chess.Move.from_uci("e1c1"))
-                    if self.color == chess.WHITE and board.color_at(chess.D8) is None and board.color_at(
-                            chess.C8) is None and board.color_at(chess.B8) is None:
+                    if self.color == chess.WHITE and board.color_at(chess.D8) is None and board.color_at(chess.C8) is None and board.color_at(chess.B8) is None:
                         moves.add(chess.Move.from_uci("e8c8"))
             for move in moves:
                 board.push(move)
@@ -187,7 +183,7 @@ class AxolotlBot(Player):
                 del dist[h]
 
         # choose which square by minimizing some function f
-        fmin = math.inf
+        f_min = math.inf
         self.sense = None
         for square, dist in distributions.items():
             # f = maximum number of hypotheses remaining
@@ -199,8 +195,8 @@ class AxolotlBot(Player):
             #     f += n * p
 
             # take min
-            if f < fmin:
-                fmin = f
+            if f < f_min:
+                f_min = f
                 self.sense = square
 
         print("Sensed square " + chess.SQUARE_NAMES[self.sense])
@@ -298,7 +294,7 @@ class AxolotlBot(Player):
 
         distributions = {chess.Move.null(): {}}  # maps move to a distribution, each distribution is a map from score to probability
         graph = self.generate_submove_graph()  # see generate_submove_graph for details
-        # sort move_actions so that if the moves in move_actions are processed in order and u -> v is an edge in the submove graph, then v will be processed before u
+        # sort move_actions in topological order according to graph
         move_actions.sort(key=lambda x: (x.from_square, abs(x.from_square % 8 - x.to_square % 8) + abs(x.from_square // 8 - x.to_square // 8)))
         for move in move_actions:
             distributions[move] = {}
@@ -361,7 +357,7 @@ class AxolotlBot(Player):
             add(distributions[chess.Move.null()], scores[chess.Move.null()], p)
             board.pop()
 
-            # process rest of moves
+            # process rest of moves in topological order
             for move in move_actions:
                 # legal move
                 if move in legal_moves:
@@ -390,7 +386,7 @@ class AxolotlBot(Player):
                 add(distributions[move], scores[move], p)
 
         # choose move by maximizing some function f
-        fmax = -math.inf
+        f_max = -math.inf
         self.move = None
         for move, dist in distributions.items():
             # f is min score
@@ -402,8 +398,8 @@ class AxolotlBot(Player):
                 f += s * p
             print(move.uci() + " " + str(f))
             # take max
-            if f > fmax:
-                fmax = f
+            if f > f_max:
+                f_max = f
                 self.move = move
 
         print("Choose move " + self.move.uci())
